@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AGT default: compositing OFF. With compositing on, xfwm4 exits
+     at startup with "Another compositing manager is running on
+     screen 0" on this Xvfb stack (found live 2026-11-20 under
+     0.1.13). Setting /general/use_compositing=false in the live
+     session fixed it (xfwm4 stayed alive across censuses); this
+     default makes the fix permanent across reinstalls. -->
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false"/>
+  </property>
+</channel>

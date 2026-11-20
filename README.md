@@ -56,6 +56,7 @@ share/xview/session_run.py  starts and supervises one agent's desktop stack
 share/xview/websockify/     vendored websockify 0.12.0 (Python)
 share/xview/web/            vendored noVNC 1.4.0 web client
 etc/                        shipped defaults: fonts, XDG and xfconf settings
+share/fontconfig/           fontconfig configuration snippets (conf.avail)
 launcher/                   the two AGT deployments that run the add-on
 build/                      from-source build scripts for the whole X/XFCE stack
 tools/make_addon.py         packages the add-on tree into the installable zip

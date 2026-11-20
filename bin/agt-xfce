@@ -1,0 +1,232 @@
+#!/data/data/com.novainc.agt/files/usr/bin/python3
+# agt-xfce: session manager for the XFCE add-on.
+#
+# Design of record: hidden_files/xfce-viewing-design-2026-11-19.md
+# - Each admitted agent gets its OWN desktop space under
+#   addons/xfce/spaces/<agent>/ (own HOME, own config, own profile),
+#   the same isolation pattern as the per-agent filesystem and Vault.
+# - A session runs as an AGT deployment (the supervisor keeps it
+#   alive). This tool prepares the space and prints the deploy
+#   command; session_run.py (inside the deployment) starts the
+#   stack, mints the one-time token and writes the session record.
+# - The token NEVER travels in a job payload or a start command
+#   (both are stored server-side). It lives only in the add-on's
+#   state dir on the phone and in the link the agent sends the
+#   owner: https://x-agt.novamail.store/<token>
+# - Closing the session (deployment stop, or `agt-xfce close`)
+#   deletes the record and the link dies with it.
+import json
+import os
+import re
+import secrets
+import signal
+import string
+import sys
+import time
+
+# realpath, not abspath: AddonStore links this tool into the shared
+# addons/bin dir, and the anchor must resolve through that symlink
+# to the add-on's own root (a plain abspath anchored state and
+# spaces in the shared addons dir instead - found live 2026-11-20).
+ADDON = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+STATE = os.path.join(ADDON, "state")
+SPACES = os.path.join(ADDON, "spaces")
+SESSIONS = os.path.join(STATE, "sessions")
+BY_AGENT = os.path.join(STATE, "by-agent")
+CLOSED = os.path.join(STATE, "closed")
+ALLOC = os.path.join(STATE, "alloc.json")
+GATE_PORT = 18787
+HOST = "https://x-agt.novamail.store"
+TOKEN_ALPHABET = string.ascii_letters + string.digits
+AGENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+
+def die(msg):
+    print("agt-xfce: " + msg)
+    sys.exit(1)
+
+
+def ensure_dirs():
+    for d in (STATE, SPACES, SESSIONS, BY_AGENT, CLOSED):
+        os.makedirs(d, exist_ok=True)
+
+
+def load_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def save_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f)
+    os.replace(tmp, path)
+
+
+def check_agent(agent):
+    if not AGENT_RE.match(agent or ""):
+        die("agent id must be a slug like 'instinct' or 'agent-2'")
+
+
+def slot_for(agent):
+    """Stable per-agent slot: display 90+slot, vnc 5990+slot, ws 6080+slot."""
+    ensure_dirs()
+    alloc = load_json(ALLOC, {})
+    if agent in alloc:
+        return alloc[agent]
+    used = set(alloc.values())
+    slot = 0
+    while slot in used:
+        slot += 1
+    if slot > 19:
+        die("all 20 desktop slots are taken")
+    alloc[agent] = slot
+    save_json(ALLOC, alloc)
+    return slot
+
+
+def ports_for(agent):
+    slot = slot_for(agent)
+    return slot, 90 + slot, 5990 + slot, 6080 + slot
+
+
+def new_token():
+    return "".join(secrets.choice(TOKEN_ALPHABET) for _ in range(10))
+
+
+def space_for(agent):
+    return os.path.join(SPACES, agent)
+
+
+def record_for(agent):
+    link = load_json(os.path.join(BY_AGENT, agent + ".json"), None)
+    if not link:
+        return None, None
+    token = link.get("token")
+    rec = load_json(os.path.join(SESSIONS, token + ".json"), None)
+    return token, rec
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def session_live(agent):
+    token, rec = record_for(agent)
+    if not rec:
+        return None, None
+    if not pid_alive(rec.get("pid", 0)):
+        return token, None
+    return token, rec
+
+
+def cmd_start(agent):
+    check_agent(agent)
+    ensure_dirs()
+    # A fresh start clears any stale close marker for this agent.
+    marker = os.path.join(CLOSED, agent)
+    if os.path.exists(marker):
+        os.remove(marker)
+    space = space_for(agent)
+    for sub in ("", ".config", ".cache", ".local/share", "Desktop"):
+        os.makedirs(os.path.join(space, sub), exist_ok=True)
+    token, rec = session_live(agent)
+    if rec:
+        print("session already live for agent '%s'" % agent)
+        print("link: %s/%s" % (HOST, token))
+        return
+    print("space ready: %s" % space)
+    print("deploy this as the agent's session (port 0, stays foreground):")
+    print(json.dumps({
+        "name": "xfce-" + agent,
+        "git": "https://github.com/kilomene/agt-xview-launcher",
+        "command": "bash session.sh %s" % agent,
+        "port": 0,
+    }))
+    print("then run: agt-xfce link --agent %s" % agent)
+    print("the link is minted when the session starts; it is not in")
+    print("the deploy payload or the start command, by design.")
+
+
+def cmd_link(agent):
+    check_agent(agent)
+    token, rec = session_live(agent)
+    if not rec:
+        die("no live session for agent '%s'" % agent)
+    print("%s/%s" % (HOST, token))
+
+
+def cmd_status():
+    ensure_dirs()
+    rows = []
+    for name in sorted(os.listdir(BY_AGENT)):
+        if not name.endswith(".json"):
+            continue
+        agent = name[:-5]
+        token, rec = session_live(agent)
+        if rec:
+            rows.append((agent, token, rec))
+    if not rows:
+        print("no live sessions")
+        return
+    for agent, token, rec in rows:
+        since = time.strftime("%Y-%m-%d %H:%M", time.localtime(rec.get("startedAt", 0)))
+        print("%s  since %s  %s/%s" % (agent, since, HOST, token))
+
+
+def cmd_close(agent):
+    check_agent(agent)
+    ensure_dirs()
+    # The close marker makes a supervisor-restarted session-run idle
+    # instead of minting a new session; the records die at once, so
+    # the link is dead from this moment.
+    with open(os.path.join(CLOSED, agent), "w") as f:
+        f.write(str(int(time.time())))
+    token, rec = record_for(agent)
+    if token:
+        for p in (os.path.join(SESSIONS, token + ".json"),
+                  os.path.join(BY_AGENT, agent + ".json")):
+            if os.path.exists(p):
+                os.remove(p)
+    if rec and pid_alive(rec.get("pid", 0)):
+        try:
+            os.killpg(int(rec["pid"]), signal.SIGTERM)
+        except Exception:
+            try:
+                os.kill(int(rec["pid"]), signal.SIGTERM)
+            except Exception:
+                pass
+    print("session closed for agent '%s'; its link is dead" % agent)
+    print("park it fully with a stop job for the xfce-%s deployment" % agent)
+
+
+def main(argv):
+    if len(argv) < 2:
+        die("usage: agt-xfce start|link|status|close --agent <id>")
+    cmd = argv[1]
+    agent = None
+    if "--agent" in argv:
+        i = argv.index("--agent")
+        if i + 1 < len(argv):
+            agent = argv[i + 1]
+    if cmd == "start":
+        cmd_start(agent)
+    elif cmd == "link":
+        cmd_link(agent)
+    elif cmd == "status":
+        cmd_status()
+    elif cmd == "close":
+        cmd_close(agent)
+    else:
+        die("unknown command '%s'" % cmd)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

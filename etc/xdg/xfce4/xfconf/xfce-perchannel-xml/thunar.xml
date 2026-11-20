@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AGT default: pin sane first-run window geometry. On the bare
+     Xvfb display Thunar's computed first window size overflowed
+     ("Native Windows wider or taller than 32767 pixels") and no
+     window ever appeared (found live 2026-11-20). -->
+<channel name="thunar" version="1.0">
+  <property name="last-window-width" type="int" value="900"/>
+  <property name="last-window-height" type="int" value="600"/>
+  <property name="last-window-maximized" type="bool" value="false"/>
+</channel>

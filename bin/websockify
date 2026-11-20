@@ -1,0 +1,6 @@
+#!/bin/sh
+# websockify launcher inside the XFCE add-on: runs the vendored
+# python package with the phone's python3.
+ADDON=/data/data/com.novainc.agt/files/addons/xfce
+PYTHONPATH="$ADDON/share/xview" exec /data/data/com.novainc.agt/files/usr/bin/python3 \
+  -m websockify "$@"
